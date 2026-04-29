@@ -1,0 +1,49 @@
+name: MeshGuard Policy Check
+
+on:
+  push:
+    paths:
+      - "policies/**"
+  pull_request:
+    paths:
+      - "policies/**"
+
+jobs:
+  validate:
+    name: Validate Policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate policy syntax
+        uses: meshguard/meshguard-action@v1
+        with:
+          gateway-url: ${{ secrets.MESHGUARD_GATEWAY_URL }}
+          api-key: ${{ secrets.MESHGUARD_API_KEY }}
+          policy-path: policies/
+          check-mode: validate
+
+  dry-run:
+    name: Dry-Run Policy Tests
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dry-run policy checks
+        id: policy-check
+        uses: meshguard/meshguard-action@v1
+        with:
+          gateway-url: ${{ secrets.MESHGUARD_GATEWAY_URL }}
+          api-key: ${{ secrets.MESHGUARD_API_KEY }}
+          policy-path: policies/
+          check-mode: dry-run
+          agent-id: agent-ci-test
+          actions: "read:data,write:config,tool:exec,admin:delete"
+          fail-on-warning: "true"
+
+      - name: Print results
+        if: always()
+        run: |
+          echo "Result: ${{ steps.policy-check.outputs.result }}"
+          echo "Details: ${{ steps.policy-check.outputs.details }}" | jq .

@@ -1,0 +1,45 @@
+name: "MeshGuard Policy Check"
+description: "Validate MeshGuard policies and run governance dry-run checks in CI"
+author: "MeshGuard"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  gateway-url:
+    description: "MeshGuard gateway URL"
+    required: true
+  api-key:
+    description: "MeshGuard API key"
+    required: true
+  policy-path:
+    description: "Path to YAML policy files"
+    required: false
+    default: "policies/"
+  check-mode:
+    description: '"validate" (syntax only) or "dry-run" (test against gateway)'
+    required: false
+    default: "validate"
+  fail-on-warning:
+    description: "Fail the action if any warnings are found"
+    required: false
+    default: "false"
+  agent-id:
+    description: "Agent ID for dry-run checks"
+    required: false
+    default: ""
+  actions:
+    description: "Comma-separated actions to test in dry-run mode"
+    required: false
+    default: ""
+
+outputs:
+  result:
+    description: '"pass" or "fail"'
+  details:
+    description: "JSON string with validation results"
+
+runs:
+  using: "node20"
+  main: "index.js"
