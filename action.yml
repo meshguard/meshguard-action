@@ -9,10 +9,12 @@ branding:
 inputs:
   gateway-url:
     description: "MeshGuard gateway URL"
-    required: true
+    required: false
+    default: ""
   api-key:
     description: "MeshGuard API key"
-    required: true
+    required: false
+    default: ""
   policy-path:
     description: "Path to YAML policy files"
     required: false
@@ -33,12 +35,18 @@ inputs:
     description: "Comma-separated actions to test in dry-run mode"
     required: false
     default: ""
+  historical-window:
+    description: "Historical decision window for gateway dry-run, for example last-7d"
+    required: false
+    default: ""
 
 outputs:
   result:
     description: '"pass" or "fail"'
   details:
     description: "JSON string with validation results"
+  summary:
+    description: "Markdown policy review summary"
 
 runs:
   using: "node20"

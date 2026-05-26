@@ -20,23 +20,31 @@ function validatePolicyStructure(policy, filePath) {
     return issues;
   }
 
-  // Required top-level fields
-  if (!policy.name) {
-    issues.push({ level: "error", message: `${filePath}: missing required field "name"` });
+  const normalized = normalizePolicy(policy);
+
+  if (normalized.apiVersion && normalized.apiVersion !== "governance.toolkit/v1") {
+    issues.push({
+      level: "warning",
+      message: `${filePath}: unsupported apiVersion "${normalized.apiVersion}"; expected governance.toolkit/v1 for AGT-compatible policies`,
+    });
   }
 
-  if (!policy.version) {
+  if (!normalized.name) {
+    issues.push({ level: "error", message: `${filePath}: missing required policy name` });
+  }
+
+  if (!normalized.version) {
     issues.push({ level: "warning", message: `${filePath}: missing field "version"` });
   }
 
-  if (!policy.appliesTo || typeof policy.appliesTo !== "object") {
-    issues.push({ level: "error", message: `${filePath}: missing required field "appliesTo"` });
+  if (!normalized.appliesTo || typeof normalized.appliesTo !== "object") {
+    issues.push({ level: "warning", message: `${filePath}: missing "appliesTo"; policy may need tenant-side bindings` });
   } else {
     const hasScope =
-      (Array.isArray(policy.appliesTo.trustTiers) && policy.appliesTo.trustTiers.length > 0) ||
-      (Array.isArray(policy.appliesTo.agentIds) && policy.appliesTo.agentIds.length > 0) ||
-      (Array.isArray(policy.appliesTo.tags) && policy.appliesTo.tags.length > 0) ||
-      (Array.isArray(policy.appliesTo.orgIds) && policy.appliesTo.orgIds.length > 0);
+      (Array.isArray(normalized.appliesTo.trustTiers) && normalized.appliesTo.trustTiers.length > 0) ||
+      (Array.isArray(normalized.appliesTo.agentIds) && normalized.appliesTo.agentIds.length > 0) ||
+      (Array.isArray(normalized.appliesTo.tags) && normalized.appliesTo.tags.length > 0) ||
+      (Array.isArray(normalized.appliesTo.orgIds) && normalized.appliesTo.orgIds.length > 0);
     if (!hasScope) {
       issues.push({
         level: "warning",
@@ -46,14 +54,15 @@ function validatePolicyStructure(policy, filePath) {
   }
 
   // Rules array
-  if (!Array.isArray(policy.rules) || policy.rules.length === 0) {
+  if (!Array.isArray(normalized.rules) || normalized.rules.length === 0) {
     issues.push({ level: "error", message: `${filePath}: missing or empty "rules" array` });
   } else {
-    policy.rules.forEach((rule, i) => {
-      if (!rule.effect || !["allow", "deny"].includes(rule.effect)) {
+    normalized.rules.forEach((rule, i) => {
+      const effect = String(rule.effect || "").toLowerCase();
+      if (!effect || !["allow", "deny", "require_approval"].includes(effect)) {
         issues.push({
           level: "error",
-          message: `${filePath}: rule[${i}] has invalid or missing "effect" (must be "allow" or "deny")`,
+          message: `${filePath}: rule[${i}] has invalid or missing "effect" (must be allow, deny, or require_approval)`,
         });
       }
       if (!Array.isArray(rule.actions) || rule.actions.length === 0) {
@@ -66,7 +75,8 @@ function validatePolicyStructure(policy, filePath) {
   }
 
   // defaultEffect
-  if (!policy.defaultEffect || !["allow", "deny"].includes(policy.defaultEffect)) {
+  const defaultEffect = String(normalized.defaultEffect || "").toLowerCase();
+  if (!defaultEffect || !["allow", "deny"].includes(defaultEffect)) {
     issues.push({
       level: "warning",
       message: `${filePath}: missing or invalid "defaultEffect" (should be "allow" or "deny"); defaults to "deny"`,
@@ -74,6 +84,19 @@ function validatePolicyStructure(policy, filePath) {
   }
 
   return issues;
+}
+
+function normalizePolicy(policy) {
+  const spec = policy.spec && typeof policy.spec === "object" ? policy.spec : policy;
+  return {
+    apiVersion: policy.apiVersion,
+    kind: policy.kind,
+    name: policy.name || policy.metadata?.name,
+    version: policy.version || policy.metadata?.version || spec.version,
+    appliesTo: policy.appliesTo || spec.appliesTo || spec.bindings,
+    rules: policy.rules || spec.rules,
+    defaultEffect: policy.defaultEffect || spec.defaultEffect,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,13 +177,14 @@ async function findPolicyFiles(policyPath) {
 // ---------------------------------------------------------------------------
 
 async function run() {
-  const gatewayUrl = core.getInput("gateway-url", { required: true });
-  const apiKey = core.getInput("api-key", { required: true });
+  const gatewayUrl = core.getInput("gateway-url");
+  const apiKey = core.getInput("api-key");
   const policyPath = core.getInput("policy-path") || "policies/";
   const checkMode = core.getInput("check-mode") || "validate";
   const failOnWarning = core.getInput("fail-on-warning") === "true";
   const agentId = core.getInput("agent-id") || "";
   const actionsRaw = core.getInput("actions") || "";
+  const historicalWindow = core.getInput("historical-window") || "";
 
   const actionsList = actionsRaw
     .split(",")
@@ -217,6 +241,7 @@ async function run() {
       }
 
       const issues = validatePolicyStructure(parsed, relPath);
+      const normalized = normalizePolicy(parsed);
       allIssues.push(...issues);
 
       for (const issue of issues) {
@@ -230,8 +255,8 @@ async function run() {
       }
 
       if (!issues.some((i) => i.level === "error")) {
-        core.info(`  OK: ${parsed.name} — ${parsed.rules?.length ?? 0} rule(s)`);
-        fileResults.push({ file: relPath, name: parsed.name, valid: true, rules: parsed.rules?.length ?? 0 });
+        core.info(`  OK: ${normalized.name} — ${normalized.rules?.length ?? 0} rule(s)`);
+        fileResults.push({ file: relPath, name: normalized.name, valid: true, rules: normalized.rules?.length ?? 0 });
       } else {
         fileResults.push({ file: relPath, valid: false });
       }
@@ -240,6 +265,11 @@ async function run() {
 
   // -- DRY-RUN MODE --------------------------------------------------------
   else if (checkMode === "dry-run") {
+    if (!gatewayUrl || !apiKey) {
+      core.setFailed("gateway-url and api-key are required when check-mode=dry-run");
+      return;
+    }
+
     for (const filePath of files) {
       const relPath = path.relative(process.cwd(), filePath);
       core.info(`Dry-run validating: ${relPath}`);
@@ -265,6 +295,7 @@ async function run() {
         hasError = true;
         continue;
       }
+      const normalized = normalizePolicy(parsed);
 
       // 1. Validate against gateway
       const valResult = await gatewayValidate(gatewayUrl, apiKey, parsed, relPath);
@@ -279,7 +310,7 @@ async function run() {
         continue;
       }
 
-      core.info(`  Gateway validated: ${parsed.name}`);
+      core.info(`  Gateway validated: ${normalized.name}`);
 
       // 2. Test each action if agent-id and actions provided
       const testResults = [];
@@ -305,10 +336,11 @@ async function run() {
 
       fileResults.push({
         file: relPath,
-        name: parsed.name,
+        name: normalizePolicy(parsed).name,
         valid: true,
         gatewayValidated: true,
         tests: testResults,
+        historicalWindow: historicalWindow || undefined,
       });
     }
   } else {
@@ -325,9 +357,18 @@ async function run() {
     files: fileResults,
     issues: allIssues,
   });
+  const markdownSummary = renderSummary({
+    mode: checkMode,
+    filesScanned: files.length,
+    files: fileResults,
+    issues: allIssues,
+    result: overallResult,
+  });
 
   core.setOutput("result", overallResult);
   core.setOutput("details", details);
+  core.setOutput("summary", markdownSummary);
+  writeStepSummary(markdownSummary);
 
   core.info("");
   core.info("=== MeshGuard Policy Check Summary ===");
@@ -342,6 +383,51 @@ async function run() {
   }
 }
 
-run().catch((err) => {
-  core.setFailed(`Unexpected error: ${err.message}`);
-});
+function renderSummary(details) {
+  const errors = details.issues.filter((i) => i.level === "error").length;
+  const warnings = details.issues.filter((i) => i.level === "warning").length;
+  const lines = [
+    "## MeshGuard Policy Check",
+    "",
+    `Result: **${details.result.toUpperCase()}**`,
+    `Mode: \`${details.mode}\``,
+    `Files: ${details.filesScanned}`,
+    `Errors: ${errors}`,
+    `Warnings: ${warnings}`,
+    "",
+    "| File | Policy | Status | Rules |",
+    "|---|---|---|---|",
+  ];
+
+  for (const file of details.files) {
+    lines.push(
+      `| \`${file.file}\` | ${file.name || ""} | ${file.valid ? "pass" : "fail"} | ${file.rules ?? ""} |`,
+    );
+  }
+
+  if (details.issues.length) {
+    lines.push("", "### Issues");
+    for (const issue of details.issues) {
+      lines.push(`- **${issue.level}**: ${issue.message}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function writeStepSummary(markdownSummary) {
+  if (!process.env.GITHUB_STEP_SUMMARY) return;
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdownSummary);
+}
+
+if (require.main === module) {
+  run().catch((err) => {
+    core.setFailed(`Unexpected error: ${err.message}`);
+  });
+}
+
+module.exports = {
+  normalizePolicy,
+  validatePolicyStructure,
+  renderSummary,
+};

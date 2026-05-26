@@ -4,6 +4,7 @@
   "description": "GitHub Action to validate MeshGuard policies and run governance dry-run checks in CI",
   "main": "index.js",
   "scripts": {
+    "build": "node --check index.js",
     "test": "node --test test.js"
   },
   "keywords": [
